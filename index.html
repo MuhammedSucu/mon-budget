@@ -439,6 +439,15 @@
     <div id="movementsRows"></div>
   </div>
 
+  <div class="sync-card">
+    <div class="sync-row">
+      <input id="fSyncCode" type="text" placeholder="Votre code personnel">
+      <button id="syncBtn">Synchroniser</button>
+    </div>
+    <span class="sync-status off" id="syncStatus">Sync cloud : non configurée</span>
+    <div class="sync-help">Ce code est la clé vers vos données sur le serveur — mémorisez-le, il sert à les retrouver sur n'importe quel appareil, même si le navigateur oublie tout.</div>
+  </div>
+
   <div class="backup-card">
     <span class="title">Sauvegarde</span>
     <button id="exportExcelBtn">Télécharger en Excel</button>
@@ -695,12 +704,12 @@ function otherSymbol(){ return isBaseForeign() ? '€' : profile().symbol; }
 // ==== À REMPLIR : collez ici la config de votre projet Firebase ====
 // (Console Firebase > Paramètres du projet > Vos applications > config)
 const firebaseConfig = {
-  apiKey: "VOTRE_API_KEY",
-  authDomain: "VOTRE_PROJET.firebaseapp.com",
-  projectId: "VOTRE_PROJET",
-  storageBucket: "VOTRE_PROJET.appspot.com",
-  messagingSenderId: "VOTRE_SENDER_ID",
-  appId: "VOTRE_APP_ID"
+  apiKey: "AIzaSyDyjYU11c7hf-E4oY4fTs2NUaVs1rjZVDw",
+  authDomain: "budget-5fa53.firebaseapp.com",
+  projectId: "budget-5fa53",
+  storageBucket: "budget-5fa53.firebasestorage.app",
+  messagingSenderId: "15157253945",
+  appId: "1:15157253945:web:072014eba8c0fa08f9bae8"
 };
 // =====================================================================
 
@@ -915,6 +924,7 @@ async function switchProfile(newId){
   applyProfileLabels();
 
   syncCode = localStorage.getItem(profile().syncKey) || '';
+  document.getElementById('fSyncCode').value = syncCode;
 
   await loadData();
 }
@@ -2039,6 +2049,12 @@ document.getElementById('upcomingRows').addEventListener('change', async (e) => 
   renderAll();
 });
 
+document.getElementById('syncBtn').addEventListener('click', () => {
+  const val = document.getElementById('fSyncCode').value.trim();
+  if(!val){ alert('Merci de choisir un code (par exemple votre prénom + un chiffre).'); return; }
+  connectSync(val);
+});
+
 fCategory.addEventListener('change', async () => {
   if(fCategory.value !== '__new__') return;
   const cat = await createCustomCategory(currentType);
@@ -2226,6 +2242,7 @@ populateCategories();
 populateAccountSelect();
 populateMovementCurrencies();
 applyProfileLabels();
+document.getElementById('fSyncCode').value = syncCode;
 loadData();
 </script>
 
