@@ -235,6 +235,8 @@
     width: 62px; padding: 3px 5px; border-radius: 4px; border: 1px solid var(--line);
     background:#fff; font-family:inherit; font-size:11px; text-align:right;
   }
+  .stmt-start input[type="date"]{ width: auto; flex:1; min-width:110px; text-align:left; }
+  .stmt-start.stmt-amounts{ border-top:none; padding-top:0; }
   .stmt-transactions{
     border-top: 1px solid var(--line); padding-top: 8px; display:flex; flex-direction:column;
     gap: 6px; max-height: 230px; overflow-y:auto;
@@ -1073,6 +1075,12 @@ function computeAccountBalance(accountId, currency){
   if(!acc) return 0;
   let bal = (currency === 'EUR') ? (acc.startEUR || 0) : (acc.startForeign || 0);
 
+  let refDate = null;
+  if(acc.refDate){
+    refDate = parseIso(acc.refDate).date;
+    refDate.setHours(0,0,0,0);
+  }
+
   data.entries.forEach(e => {
     if((e.currency || 'EUR') !== currency) return;
     if(e.recurring){
@@ -1081,17 +1089,29 @@ function computeAccountBalance(accountId, currency){
         const info = e.paidMonths[key];
         const acct = (info && info.account) || e.account;
         if(acct !== accountId) return;
+        const [y, m] = key.split('-').map(Number);
+        const occDate = new Date(y, m, Math.min(e.day || 1, 28));
+        if(refDate && occDate <= refDate) return; // déjà inclus dans le solde de référence
         bal += (e.type === 'revenu' ? e.amount : -e.amount);
       });
     } else {
       if(!e.paid) return;
       const acct = e.paidAccount || e.account;
       if(acct !== accountId) return;
+      if(refDate && e.date){
+        const p = parseIso(e.date);
+        const occDate = new Date(p.year, p.month, p.day || 1);
+        if(occDate <= refDate) return; // déjà inclus dans le solde de référence
+      }
       bal += (e.type === 'revenu' ? e.amount : -e.amount);
     }
   });
 
   data.movements.forEach(m => {
+    if(refDate && m.date){
+      const d = parseIso(m.date).date;
+      if(d <= refDate) return;
+    }
     if(m.fromAccount === accountId && m.fromCurrency === currency) bal -= m.fromAmount;
     if(m.toAccount === accountId && m.toCurrency === currency) bal += m.toAmount;
   });
@@ -1114,6 +1134,12 @@ function computeLiveBalance(){
 }
 
 function accountTransactions(accountId){
+  const acc = data.accounts.find(a => a.id === accountId);
+  let refDate = null;
+  if(acc && acc.refDate){
+    refDate = parseIso(acc.refDate).date;
+    refDate.setHours(0,0,0,0);
+  }
   const list = [];
   data.entries.forEach(e => {
     const cur = e.currency || 'EUR';
@@ -1124,9 +1150,10 @@ function accountTransactions(accountId){
         const acct = (info && info.account) || e.account;
         if(acct !== accountId) return;
         const [y, m] = key.split('-').map(Number);
+        const d = new Date(y, m, Math.min(e.day || 1, 28));
+        if(refDate && d <= refDate) return;
         list.push({
-          kind: 'entry', entry: e, year: y, month: m,
-          date: new Date(y, m, Math.min(e.day || 1, 28)),
+          kind: 'entry', entry: e, year: y, month: m, date: d,
           amount: e.amount, currency: cur, type: e.type, label: e.label,
         });
       });
@@ -1135,15 +1162,17 @@ function accountTransactions(accountId){
       const acct = e.paidAccount || e.account;
       if(acct !== accountId) return;
       const p = e.date ? parseIso(e.date) : { year: today.getFullYear(), month: today.getMonth(), day: today.getDate() };
+      const d = new Date(p.year, p.month, p.day || 1);
+      if(refDate && d <= refDate) return;
       list.push({
-        kind: 'entry', entry: e, year: p.year, month: p.month,
-        date: new Date(p.year, p.month, p.day || 1),
+        kind: 'entry', entry: e, year: p.year, month: p.month, date: d,
         amount: e.amount, currency: cur, type: e.type, label: e.label,
       });
     }
   });
   data.movements.forEach(m => {
     const d = parseIso(m.date).date;
+    if(refDate && d <= refDate) return;
     if(m.fromAccount === accountId){
       list.push({ kind:'movement', movement:m, date:d, amount:m.fromAmount, currency:m.fromCurrency, type:'depense', label:`Vers ${accountName(m.toAccount)}` });
     }
@@ -1191,7 +1220,10 @@ function renderAccounts(){
           <div class="stmt-balance-sub">≈ ${fmtMoney(liveEUR)}</div>
         </div>
         <div class="stmt-start">
-          <span>Réf.</span>
+          <span>Réf. au</span>
+          <input type="date" value="${acc.refDate || ''}" data-field="refDate">
+        </div>
+        <div class="stmt-start stmt-amounts">
           <input type="number" step="0.01" value="${acc.startForeign || 0}" data-field="startForeign"> ${profile().code}
           <input type="number" step="0.01" value="${acc.startEUR || 0}" data-field="startEUR"> €
         </div>
@@ -1967,6 +1999,8 @@ document.getElementById('accountsList').addEventListener('change', async (e) => 
   const field = input.dataset.field;
   if(field === 'name'){
     acc.name = input.value.trim() || acc.name;
+  } else if(field === 'refDate'){
+    acc.refDate = input.value || null;
   } else {
     const val = parseFloat(input.value) || 0;
     acc[field] = val;
@@ -2031,7 +2065,7 @@ document.getElementById('addAccountBtn').addEventListener('click', async () => {
   const name = prompt('Nom du compte :');
   if(!name || !name.trim()) return;
   const id = 'acc_' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
-  data.accounts.push({ id, name: name.trim(), startEUR: 0, startForeign: 0 });
+  data.accounts.push({ id, name: name.trim(), startEUR: 0, startForeign: 0, refDate: isoDate(today.getFullYear(), today.getMonth(), today.getDate()) });
   await saveData();
   renderAll();
   populateAccountSelect();
