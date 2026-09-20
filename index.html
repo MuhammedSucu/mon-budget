@@ -1227,6 +1227,7 @@ function renderAccounts(){
           <input type="number" step="0.01" value="${acc.startForeign || 0}" data-field="startForeign"> ${profile().code}
           <input type="number" step="0.01" value="${acc.startEUR || 0}" data-field="startEUR"> €
         </div>
+        <div class="stmt-conv-hint" style="font-size:10.5px; color:var(--ink-soft); font-style:italic;">Deux pots séparés — pas de conversion entre eux</div>
         <div class="stmt-transactions">
           ${txs.length ? txs.map(txRowHtml).join('') : `<div class="stmt-empty">Aucune opération payée pour l'instant</div>`}
         </div>
@@ -2002,18 +2003,7 @@ document.getElementById('accountsList').addEventListener('change', async (e) => 
   } else if(field === 'refDate'){
     acc.refDate = input.value || null;
   } else {
-    const val = parseFloat(input.value) || 0;
-    acc[field] = val;
-    const rate = getRate(today.getFullYear(), today.getMonth());
-    if(field === 'startForeign'){
-      acc.startEUR = Math.round((val / rate) * 100) / 100;
-      const eurInput = row.querySelector('[data-field="startEUR"]');
-      if(eurInput) eurInput.value = acc.startEUR;
-    } else if(field === 'startEUR'){
-      acc.startForeign = Math.round((val * rate) * 100) / 100;
-      const foreignInput = row.querySelector('[data-field="startForeign"]');
-      if(foreignInput) foreignInput.value = acc.startForeign;
-    }
+    acc[field] = parseFloat(input.value) || 0;
   }
   await saveData();
   renderAll();
