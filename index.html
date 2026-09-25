@@ -313,8 +313,7 @@
     padding: 10px 18px; border-bottom: 1px solid var(--line);
   }
   .echeance-row:last-child{ border-bottom:none; }
-  .echeance-row.is-overdue{ background: var(--expense-soft); }
-  .echeance-row.is-paid{ opacity: 0.5; }
+  .echeance-row.is-past{ opacity: 0.7; }
   .echeance-row .dot-bar{ align-self:stretch; border-radius:2px; }
   .echeance-row .date{ font-size:12px; color:var(--ink-soft); }
   .echeance-row .info .lbl{ font-size:14px; font-weight:500; }
@@ -658,13 +657,6 @@
     <div class="field" id="mFieldDay" style="display:none">
       <label for="mDay">Jour du mois</label>
       <input id="mDay" type="number" min="1" max="31">
-    </div>
-
-    <div class="field" style="border-top:1px solid var(--line); padding-top:14px; margin-top:4px;">
-      <label class="paid-toggle" style="font-size:13px;">
-        <input type="checkbox" id="mPaid">
-        <span>Payé (ce mois-ci)</span>
-      </label>
     </div>
 
     <div class="modal-actions">
@@ -1039,34 +1031,6 @@ function occurrencesBetween(startExclusive, endInclusive){
   return occ;
 }
 
-// ---- confirmation de paiement (payé) ----
-function isPaidOccurrence(entry, year, month){
-  if(entry.recurring){
-    return !!(entry.paidMonths && entry.paidMonths[`${year}-${month}`]);
-  }
-  return !!entry.paid;
-}
-function occurrenceAccount(entry, year, month){
-  if(entry.recurring){
-    const info = entry.paidMonths && entry.paidMonths[`${year}-${month}`];
-    return (info && info.account) || entry.account;
-  }
-  return entry.paidAccount || entry.account;
-}
-async function setOccurrencePaid(entryId, year, month, paid, accountId){
-  const e = data.entries.find(en => en.id === entryId);
-  if(!e) return;
-  if(e.recurring){
-    e.paidMonths = e.paidMonths || {};
-    const key = `${year}-${month}`;
-    if(paid){ e.paidMonths[key] = { account: accountId || e.account }; }
-    else{ delete e.paidMonths[key]; }
-  } else {
-    e.paid = paid;
-    e.paidAccount = accountId || e.account;
-  }
-  await saveData();
-}
 
 // solde d'un compte, dans une devise donnée ('EUR' ou la devise étrangère du profil) :
 // solde de référence de ce compte + toutes les lignes marquées "payées" avec ce compte, + les mouvements
@@ -1083,35 +1047,34 @@ function computeAccountBalance(accountId, currency){
 
   data.entries.forEach(e => {
     if((e.currency || 'EUR') !== currency) return;
+    if(e.account !== accountId) return;
     if(e.recurring){
-      if(!e.paidMonths) return;
-      Object.keys(e.paidMonths).forEach(key => {
-        const info = e.paidMonths[key];
-        const acct = (info && info.account) || e.account;
-        if(acct !== accountId) return;
-        const [y, m] = key.split('-').map(Number);
-        const occDate = new Date(y, m, Math.min(e.day || 1, 28));
-        if(refDate && occDate <= refDate) return; // déjà inclus dans le solde de référence
-        bal += (e.type === 'revenu' ? e.amount : -e.amount);
-      });
-    } else {
-      if(!e.paid) return;
-      const acct = e.paidAccount || e.account;
-      if(acct !== accountId) return;
-      if(refDate && e.date){
-        const p = parseIso(e.date);
-        const occDate = new Date(p.year, p.month, p.day || 1);
-        if(occDate <= refDate) return; // déjà inclus dans le solde de référence
+      // toutes les occurrences déjà passées ou du jour, entre la référence et aujourd'hui
+      let cursorY = today.getFullYear(), cursorM = today.getMonth();
+      for(let i = 0; i < 600; i++){
+        const occDate = new Date(cursorY, cursorM, Math.min(e.day || 1, 28));
+        if(refDate && occDate <= refDate) break;
+        if(occDate <= today){
+          bal += (e.type === 'revenu' ? e.amount : -e.amount);
+        }
+        cursorM--; if(cursorM < 0){ cursorM = 11; cursorY--; }
+        if(!refDate && (today.getFullYear() - cursorY) > 3) break; // garde-fou si aucune référence
       }
+    } else {
+      if(!e.date) return;
+      const p = parseIso(e.date);
+      const occDate = new Date(p.year, p.month, p.day || 1);
+      if(refDate && occDate <= refDate) return;
+      if(occDate > today) return; // pas encore arrivé
       bal += (e.type === 'revenu' ? e.amount : -e.amount);
     }
   });
 
   data.movements.forEach(m => {
-    if(refDate && m.date){
-      const d = parseIso(m.date).date;
-      if(d <= refDate) return;
-    }
+    if(!m.date) return;
+    const d = parseIso(m.date).date;
+    if(refDate && d <= refDate) return;
+    if(d > today) return;
     if(m.fromAccount === accountId && m.fromCurrency === currency) bal -= m.fromAmount;
     if(m.toAccount === accountId && m.toCurrency === currency) bal += m.toAmount;
   });
@@ -1142,37 +1105,33 @@ function accountTransactions(accountId){
   }
   const list = [];
   data.entries.forEach(e => {
+    if(e.account !== accountId) return;
     const cur = e.currency || 'EUR';
     if(e.recurring){
-      if(!e.paidMonths) return;
-      Object.keys(e.paidMonths).forEach(key => {
-        const info = e.paidMonths[key];
-        const acct = (info && info.account) || e.account;
-        if(acct !== accountId) return;
-        const [y, m] = key.split('-').map(Number);
-        const d = new Date(y, m, Math.min(e.day || 1, 28));
-        if(refDate && d <= refDate) return;
-        list.push({
-          kind: 'entry', entry: e, year: y, month: m, date: d,
-          amount: e.amount, currency: cur, type: e.type, label: e.label,
-        });
-      });
+      let cursorY = today.getFullYear(), cursorM = today.getMonth();
+      for(let i = 0; i < 600; i++){
+        const d = new Date(cursorY, cursorM, Math.min(e.day || 1, 28));
+        if(refDate && d <= refDate) break;
+        if(d <= today){
+          list.push({ kind:'entry', entry:e, year:cursorY, month:cursorM, date:d, amount:e.amount, currency:cur, type:e.type, label:e.label });
+        }
+        cursorM--; if(cursorM < 0){ cursorM = 11; cursorY--; }
+        if(!refDate && (today.getFullYear() - cursorY) > 3) break;
+      }
     } else {
-      if(!e.paid) return;
-      const acct = e.paidAccount || e.account;
-      if(acct !== accountId) return;
-      const p = e.date ? parseIso(e.date) : { year: today.getFullYear(), month: today.getMonth(), day: today.getDate() };
+      if(!e.date) return;
+      const p = parseIso(e.date);
       const d = new Date(p.year, p.month, p.day || 1);
       if(refDate && d <= refDate) return;
-      list.push({
-        kind: 'entry', entry: e, year: p.year, month: p.month, date: d,
-        amount: e.amount, currency: cur, type: e.type, label: e.label,
-      });
+      if(d > today) return;
+      list.push({ kind:'entry', entry:e, year:p.year, month:p.month, date:d, amount:e.amount, currency:cur, type:e.type, label:e.label });
     }
   });
   data.movements.forEach(m => {
+    if(!m.date) return;
     const d = parseIso(m.date).date;
     if(refDate && d <= refDate) return;
+    if(d > today) return;
     if(m.fromAccount === accountId){
       list.push({ kind:'movement', movement:m, date:d, amount:m.fromAmount, currency:m.fromCurrency, type:'depense', label:`Vers ${accountName(m.toAccount)}` });
     }
@@ -1331,12 +1290,7 @@ function upcomingOccurrences(count){
     });
     m++; if(m>11){ m=0; y++; }
   }
-  occ.sort((a,b) => {
-    const aPaid = isPaidOccurrence(a, a.occYear, a.occMonth);
-    const bPaid = isPaidOccurrence(b, b.occYear, b.occMonth);
-    if(aPaid !== bPaid) return aPaid ? 1 : -1; // les non-payées en premier
-    return a.occDate - b.occDate;
-  });
+  occ.sort((a,b) => a.occDate - b.occDate);
   return occ.slice(0, count);
 }
 
@@ -1495,26 +1449,19 @@ function rowHtml(e, opts={}){
 function echeanceRowHtml(e){
   const cat = catInfo(e.type, e.category);
   const sign = e.type === 'revenu' ? '+' : '−';
-  const paid = isPaidOccurrence(e, e.occYear, e.occMonth);
-  const acctId = occurrenceAccount(e, e.occYear, e.occMonth);
-  const overdue = !paid && e.occDate <= today;
+  const overdue = e.occDate <= today;
   const dateStr = e.occDate.toLocaleDateString('fr-FR', { day:'numeric', month:'short' });
   const recurBadge = e.recurring ? ` <span class="badge">↻</span>` : '';
-  const accountOptions = data.accounts.map(a => `<option value="${a.id}" ${a.id===acctId?'selected':''}>${escapeHtml(a.name)}</option>`).join('');
+  const acc = data.accounts.find(a => a.id === e.account);
   return `
-    <div class="echeance-row ${paid?'is-paid':''} ${overdue?'is-overdue':''}" data-id="${e.id}" data-year="${e.occYear}" data-month="${e.occMonth}">
+    <div class="echeance-row ${overdue?'is-past':''}" data-id="${e.id}" data-year="${e.occYear}" data-month="${e.occMonth}" style="cursor:pointer;">
       <div class="dot-bar" style="background:${cat.color}"></div>
       <div class="date">${dateStr}</div>
       <div class="info">
         <div class="lbl">${escapeHtml(e.label)}${recurBadge}</div>
-        <div class="meta"><span>${cat.label}</span>${overdue?'<span class="badge" style="background:var(--expense-soft); color:var(--expense);">en attente</span>':''}</div>
+        <div class="meta"><span>${cat.label}</span>${acc?`<span>· ${escapeHtml(acc.name)}</span>`:''}</div>
       </div>
       <div class="amount ${e.type}">${sign} ${fmtNative(e)}</div>
-      <select class="echeance-account" aria-label="Compte">${accountOptions}</select>
-      <label class="paid-toggle">
-        <input type="checkbox" class="paid-checkbox" ${paid?'checked':''}>
-        <span>Payé</span>
-      </label>
     </div>
   `;
 }
@@ -1522,8 +1469,7 @@ function echeanceRowHtml(e){
 function renderUpcoming(){
   const occ = upcomingOccurrences(10);
   const el = document.getElementById('upcomingRows');
-  const nbUnpaid = occ.filter(e => !isPaidOccurrence(e, e.occYear, e.occMonth)).length;
-  document.getElementById('upcomingCount').textContent = nbUnpaid ? `${nbUnpaid} à confirmer` : 'à jour';
+  document.getElementById('upcomingCount').textContent = occ.length ? `${occ.length} échéances` : '';
   if(occ.length === 0){
     el.innerHTML = `<div class="empty">Aucune échéance. Ajoutez un paiement prévu, comme l'école le 1er janvier.</div>`;
     return;
@@ -1568,9 +1514,8 @@ function renderMatrix(){
         else if(e.date){ const p = parseIso(e.date); applies = (p.year === year && p.month === month); }
         if(!applies) return `<td data-year="${year}" data-month="${month}"><span class="amt-empty">—</span></td>`;
         const val = toBase(e, year, month);
-        const paid = isPaidOccurrence(e, year, month);
-        const pillClass = (positive ? 'amt-pill income' : 'amt-pill expense') + (paid ? ' is-paid' : '');
-        return `<td data-year="${year}" data-month="${month}"><span class="${pillClass}">${paid?'✓ ':''}${sign} ${fmtMatrix(val, year, month)}</span></td>`;
+        const pillClass = positive ? 'amt-pill income' : 'amt-pill expense';
+        return `<td data-year="${year}" data-month="${month}"><span class="${pillClass}">${sign} ${fmtMatrix(val, year, month)}</span></td>`;
       }).join('');
       const recurBadge = e.recurring ? ' <span class="badge">↻</span>' : '';
       return `<tr class="matrix-entry-row" data-id="${e.id}" style="cursor:pointer;">
@@ -2034,14 +1979,6 @@ document.getElementById('accountsList').addEventListener('click', async (e) => {
     usedByEntry.forEach(en => { en.account = fallback; });
     usedByMoveFrom.forEach(m => { m.fromAccount = fallback; });
     usedByMoveTo.forEach(m => { m.toAccount = fallback; });
-    data.entries.forEach(en => {
-      if(en.paidAccount === accId) en.paidAccount = fallback;
-      if(en.paidMonths){
-        Object.keys(en.paidMonths).forEach(k => {
-          if(en.paidMonths[k] && en.paidMonths[k].account === accId) en.paidMonths[k].account = fallback;
-        });
-      }
-    });
   } else {
     if(!confirm('Supprimer ce compte ?')) return;
   }
@@ -2061,16 +1998,10 @@ document.getElementById('addAccountBtn').addEventListener('click', async () => {
   populateAccountSelect();
 });
 
-document.getElementById('upcomingRows').addEventListener('change', async (e) => {
+document.getElementById('upcomingRows').addEventListener('click', (e) => {
   const row = e.target.closest('.echeance-row');
   if(!row) return;
-  const id = row.dataset.id;
-  const year = parseInt(row.dataset.year);
-  const month = parseInt(row.dataset.month);
-  const checkbox = row.querySelector('.paid-checkbox');
-  const accountSel = row.querySelector('.echeance-account');
-  await setOccurrencePaid(id, year, month, checkbox.checked, accountSel.value);
-  renderAll();
+  openEditModal(row.dataset.id, parseInt(row.dataset.year), parseInt(row.dataset.month));
 });
 
 document.getElementById('syncBtn').addEventListener('click', () => {
@@ -2130,12 +2061,6 @@ function openEditModal(id, year, month){
   document.getElementById('mFieldDay').style.display = e.recurring ? '' : 'none';
   document.getElementById('mDate').value = e.recurring ? '' : (e.date || '');
   document.getElementById('mDay').value = e.recurring ? (e.day || '') : '';
-
-  const paidCheckbox = document.getElementById('mPaid');
-  paidCheckbox.checked = isPaidOccurrence(e, modalYear, modalMonth);
-  const paidAcct = occurrenceAccount(e, modalYear, modalMonth);
-  if(paidAcct) document.getElementById('mAccount').value = paidAcct;
-  document.querySelector('#mPaid + span').textContent = `Payé (${MONTHS[modalMonth]} ${modalYear})`;
 
   document.getElementById('editModalOverlay').classList.add('open');
 }
@@ -2226,15 +2151,7 @@ document.getElementById('mSaveBtn').addEventListener('click', async () => {
     delete e.day;
   }
 
-  let targetYear = modalYear, targetMonth = modalMonth;
-  if(!e.recurring){
-    const p = parseIso(e.date);
-    targetYear = p.year;
-    targetMonth = p.month;
-  }
-  const paid = document.getElementById('mPaid').checked;
-  await setOccurrencePaid(e.id, targetYear, targetMonth, paid, account);
-
+  await saveData();
   renderAll();
   closeEditModal();
 });
